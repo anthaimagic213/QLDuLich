@@ -1,0 +1,136 @@
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  allocateBuses,
+  assignRider,
+  createBus,
+  deleteBus,
+  fetchBusAssignments,
+  fetchBusPassengers,
+  fetchBuses,
+  fetchLedBuses,
+  fetchUnassignedBusRiders,
+  moveBusAssignment,
+  removeBusAssignment,
+  setBusLeader,
+  updateBus,
+} from '../api/buses'
+import { QUERY_KEYS } from '../utils/constants'
+
+export function useBuses(filters = {}, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: QUERY_KEYS.buses(filters),
+    queryFn: () => fetchBuses(filters),
+    enabled,
+  })
+}
+
+export function useBusAssignments(filters = {}, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: QUERY_KEYS.busAssignments(filters),
+    queryFn: () => fetchBusAssignments(filters),
+    enabled,
+  })
+}
+
+/**
+ * Hành khách một xe. Dùng ở My Journey cho Trưởng xe (BTC có bảng riêng qua
+ * `useBusAssignments`, có thêm nút chuyển / bỏ xếp mà Trưởng xe không được phép).
+ */
+export function useBusPassengers(busId, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: QUERY_KEYS.busPassengers(busId),
+    queryFn: () => fetchBusPassengers(busId),
+    enabled: enabled && Boolean(busId),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    retry: (count, error) => ![401, 403, 404].includes(error.status) && count < 2,
+  })
+}
+
+/**
+ * Mọi thay đổi về xe hay phân xe đều làm số chỗ cũ — kể cả số liệu trên dashboard.
+ * Gom việc xoá cache vào một chỗ như bên chuyến bay.
+ */
+function useBusInvalidator() {
+  const queryClient = useQueryClient()
+  return () => {
+    queryClient.invalidateQueries({ queryKey: ['buses'] })
+    queryClient.invalidateQueries({ queryKey: ['bus-assignments'] })
+    queryClient.invalidateQueries({ queryKey: ['admin'] })
+    queryClient.invalidateQueries({ queryKey: ['bus-unassigned'] })
+    queryClient.invalidateQueries({ queryKey: QUERY_KEYS.journey })
+  }
+}
+
+export function useSaveBus() {
+  const invalidate = useBusInvalidator()
+  return useMutation({
+    mutationFn: ({ busId, payload }) => (busId ? updateBus(busId, payload) : createBus(payload)),
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteBus() {
+  const invalidate = useBusInvalidator()
+  return useMutation({
+    mutationFn: (busId) => deleteBus(busId),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetBusLeader() {
+  const invalidate = useBusInvalidator()
+  return useMutation({
+    mutationFn: ({ busId, payload }) => setBusLeader(busId, payload),
+    onSuccess: invalidate,
+  })
+}
+
+/** Dry-run không đổi gì trên server nên không xoá cache; chỉ lần ghi thật mới làm mới. */
+export function useAllocateBuses() {
+  const invalidate = useBusInvalidator()
+  return useMutation({
+    mutationFn: (options) => allocateBuses(options),
+    onSuccess: (_data, variables) => {
+      if (variables?.dryRun === false) invalidate()
+    },
+  })
+}
+
+export function useAssignRider() {
+  const invalidate = useBusInvalidator()
+  return useMutation({
+    mutationFn: ({ registrationId, busId, reason }) => assignRider({ registrationId, busId, reason }),
+    onSuccess: invalidate,
+  })
+}
+
+export function useMoveBusAssignment() {
+  const invalidate = useBusInvalidator()
+  return useMutation({
+    mutationFn: ({ assignmentId, busId, reason }) => moveBusAssignment(assignmentId, { busId, reason }),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemoveBusAssignment() {
+  const invalidate = useBusInvalidator()
+  return useMutation({
+    mutationFn: ({ assignmentId, reason }) => removeBusAssignment(assignmentId, reason),
+    onSuccess: invalidate,
+  })
+}
+
+export function useUnassignedBusRiders(filters, { enabled = true } = {}) {
+  return useInfiniteQuery({
+    queryKey: QUERY_KEYS.busUnassigned(filters),
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) => fetchUnassignedBusRiders({ ...filters, page: pageParam, page_size: 200 }),
+    getNextPageParam: (last) => last.page * last.page_size < last.total ? last.page + 1 : undefined,
+    enabled: enabled && Boolean(filters.trip_leg_id),
+  })
+}
+
+export function useLedBuses({ enabled = true } = {}) {
+  return useQuery({ queryKey: QUERY_KEYS.ledBuses, queryFn: fetchLedBuses, enabled })
+}

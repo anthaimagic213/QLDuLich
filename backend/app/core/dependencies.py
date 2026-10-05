@@ -1,0 +1,263 @@
+"""FastAPI dependency dùng chung: lấy session, lấy user hiện tại, kiểm tra quyền.
+
+Ba lớp phân quyền (docs/09-security.md §2):
+    1. require_role(...)          — chặn theo vai trò
+    2. ownership                  — endpoint tự kiểm tra dữ liệu có phải của mình không
+    3. require_event_status(...)  — chặn theo trạng thái chương trình
+"""
+
+from typing import Annotated
+
+from fastapi import Depends, Query, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.core.exceptions import (
+    AppError,
+    InvalidEventStatusError,
+    NotFoundError,
+    PermissionDeniedError,
+    UnauthorizedError,
+)
+from app.core.security import TOKEN_TYPE_ACCESS, decode_token
+from app.models.enums import ADMIN_ROLES, EventStatus, UserRole
+from app.models.event import Event
+from app.models.user import User
+
+# auto_error=False để tự ném lỗi đúng khuôn {"error": {...}} thay vì khuôn của Starlette.
+bearer_scheme = HTTPBearer(auto_error=False, description="Dán access token vào đây")
+
+DbSession = Annotated[Session, Depends(get_db)]
+
+
+def get_authenticated_user(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    db: DbSession,
+) -> User:
+    """Giải mã access token và nạp user tương ứng.
+
+    Chỉ xác thực, KHÔNG kiểm tra `must_change_password` — dành cho đúng ba endpoint mà người đang
+    dùng mật khẩu tạm vẫn phải gọi được: xem hồ sơ, đổi mật khẩu, đăng xuất. Mọi chỗ khác dùng
+    `get_current_user`.
+    """
+    if credentials is None or not credentials.credentials:
+        raise UnauthorizedError("Chưa đăng nhập.", code="NOT_AUTHENTICATED")
+
+    payload = decode_token(credentials.credentials, expected_type=TOKEN_TYPE_ACCESS)
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise UnauthorizedError("Token thiếu thông tin người dùng.", code="TOKEN_INVALID") from exc
+
+    user = db.get(User, user_id)
+    if user is None:
+        raise UnauthorizedError("Tài khoản không tồn tại.", code="ACCOUNT_NOT_FOUND")
+    if not user.is_active:
+        raise UnauthorizedError("Tài khoản đã bị vô hiệu hoá.", code="ACCOUNT_DISABLED")
+
+    # Access token chỉ sống khi PHIÊN của nó còn sống. Chữ ký hợp lệ + chưa hết hạn là chưa đủ:
+    # đăng xuất rồi thì token đó phải chết ngay, không phải 60 phút sau.
+    from app.services import auth_service  # import trong hàm: services import ngược lại core
+
+    if not auth_service.is_session_alive(db, user_id=user.id, session_id=payload.get("sid")):
+        raise UnauthorizedError(
+            "Phiên đăng nhập đã kết thúc. Vui lòng đăng nhập lại.", code="SESSION_REVOKED"
+        )
+
+    # Role trong token có thể cũ hơn thực tế nếu admin vừa đổi quyền; luôn tin database.
+    return user
+
+
+AuthenticatedUser = Annotated[User, Depends(get_authenticated_user)]
+
+
+def get_current_user(user: AuthenticatedUser) -> User:
+    """User đã đăng nhập VÀ đã đổi mật khẩu do BTC cấp.
+
+    Mật khẩu tạm đi qua tay BTC (và có thể qua email), nên chừng nào chưa đổi thì tài khoản chưa
+    thật sự thuộc về chủ của nó. Chặn ở đây để mọi router dùng `CurrentUser` / `require_role` đều
+    theo, không phải nhớ kiểm ở từng endpoint; frontend ẩn menu chỉ là cho gọn.
+    """
+    if user.must_change_password:
+        raise PermissionDeniedError(
+            "Bạn cần đổi mật khẩu do Ban tổ chức cấp trước khi tiếp tục.",
+            code="PASSWORD_CHANGE_REQUIRED",
+        )
+    return user
+
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def require_role(*roles: UserRole | str):
+    """Dependency chặn theo vai trò.
+
+    Dùng: `dependencies=[Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN))]`
+    """
+    allowed = {str(role) for role in roles}
+
+    def _check(user: CurrentUser) -> User:
+        if user.role not in allowed:
+            raise PermissionDeniedError(
+                "Bạn không có quyền thực hiện thao tác này.",
+                details={"required_roles": sorted(allowed), "your_role": user.role},
+            )
+        return user
+
+    return _check
+
+
+require_admin = require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN)
+require_super_admin = require_role(UserRole.SUPER_ADMIN)
+require_team_leader = require_role(UserRole.TEAM_LEADER, UserRole.ADMIN, UserRole.SUPER_ADMIN)
+
+AdminUser = Annotated[User, Depends(require_admin)]
+SuperAdminUser = Annotated[User, Depends(require_super_admin)]
+
+
+def ensure_can_access_user(current_user: User, target_user_id: int) -> None:
+    """Lớp 2: chặn IDOR.
+
+    Gọi hàm này ở MỌI endpoint nhận user_id từ client. Thiếu một chỗ là CBNV xem
+    được hồ sơ người khác chỉ bằng cách đổi số trên URL.
+    """
+    if current_user.id != target_user_id and current_user.role not in ADMIN_ROLES:
+        raise PermissionDeniedError("Bạn chỉ xem được dữ liệu của chính mình.")
+
+
+# Header chọn kỳ. Không có header = kỳ mặc định (`events.is_active`), nên client cũ vẫn chạy y như trước.
+EVENT_HEADER = "X-Event-Id"
+
+
+def get_default_event(db: Session) -> Event | None:
+    """Kỳ mặc định — `events.is_active`. Dùng khi request không nói rõ kỳ nào."""
+    return db.scalar(select(Event).where(Event.is_active.is_(True)))
+
+
+def get_active_event(request: Request, db: DbSession, user: CurrentUser) -> Event:
+    """Kỳ mà request này đang thao tác.
+
+    Nhiều kỳ chạy song song (docs/13 task 6): mỗi người tự chọn kỳ, gửi kèm `X-Event-Id`. Đây là
+    chỗ DUY NHẤT quyết định "kỳ nào" — 100 chỗ dùng `ActiveEvent` trong 15 router, `require_event_status`,
+    `require_published_event`, luồng SSE Gala và chatbot đều đi qua đây nên tự động theo.
+
+    Không có header thì lấy kỳ mặc định, để client cũ và các script không gửi header vẫn chạy nguyên.
+
+    Quyền: BTC xem được mọi kỳ kể cả bản nháp; CBNV chỉ vào được kỳ đã công bố ra ngoài (khác `draft`)
+    — bản nháp là kỳ BTC đang dựng, lộ ra là lộ kế hoạch chưa chốt.
+    """
+    raw = request.headers.get(EVENT_HEADER.lower())
+    if raw is None or not raw.strip():
+        event = get_default_event(db)
+        if event is None:
+            raise NotFoundError("Chưa có kỳ Team Building nào đang mở.", code="NO_ACTIVE_EVENT")
+        return event
+
+    try:
+        event_id = int(raw.strip())
+    except ValueError as exc:
+        raise AppError(
+            f"{EVENT_HEADER} phải là số nguyên.", code="EVENT_HEADER_INVALID"
+        ) from exc
+
+    event = db.get(Event, event_id)
+    if event is None:
+        raise NotFoundError(f"Không tìm thấy kỳ #{event_id}.", code="EVENT_NOT_FOUND")
+
+    if user.role not in ADMIN_ROLES and event.status == EventStatus.DRAFT:
+        # Trả 404 chứ không 403: người ngoài không cần biết kỳ nháp đó có tồn tại hay không.
+        raise NotFoundError(f"Không tìm thấy kỳ #{event_id}.", code="EVENT_NOT_FOUND")
+
+    return event
+
+
+ActiveEvent = Annotated[Event, Depends(get_active_event)]
+
+# `?notify=true` = gửi email báo CBNV bị ảnh hưởng bởi thao tác sửa của BTC. Mặc định KHÔNG gửi:
+# BTC phải tích ô "Gửi email" ở từng thao tác (tránh spam khi thử nghiệm / sửa vặt).
+Notify = Annotated[
+    bool, Query(description="Gửi email báo CBNV bị ảnh hưởng (mặc định không gửi)")
+]
+
+
+def require_event_status(*statuses: EventStatus | str):
+    """Lớp 3: chặn theo trạng thái chương trình.
+
+    Ví dụ: nộp đăng ký chỉ hợp lệ khi event đang `registration_open`.
+    """
+    allowed = {str(status) for status in statuses}
+
+    def _check(event: ActiveEvent) -> Event:
+        if event.status not in allowed:
+            raise InvalidEventStatusError(
+                _status_message(event.status, allowed),
+                details={"current_status": event.status, "required": sorted(allowed)},
+            )
+        return event
+
+    return _check
+
+
+def require_published_event(event: ActiveEvent) -> Event:
+    """Thông tin phân bổ chỉ được xem sau khi BTC công bố."""
+    if not EventStatus(event.status).at_least(EventStatus.INFORMATION_PUBLISHED):
+        raise InvalidEventStatusError(
+            "BTC chưa công bố thông tin phân bổ.",
+            code="NOT_PUBLISHED",
+            details={"current_status": event.status},
+        )
+    return event
+
+
+def require_allocation_started(event: ActiveEvent) -> Event:
+    """Chọn ghế Gala mở từ lúc BTC bắt đầu phân bổ (đăng ký đã đóng, danh sách người đi đã chốt).
+
+    Gala là một phần của gói công bố: xếp xong bay + xe + phòng + ghế Gala rồi mới công bố một lần.
+    Trước đây chọn ghế chỉ mở SAU công bố, nên không thể bắt Gala xong trước khi công bố.
+    """
+    if not EventStatus(event.status).at_least(EventStatus.ALLOCATION_PROCESSING):
+        raise InvalidEventStatusError(
+            "Chưa tới giai đoạn phân bổ nên chưa chọn ghế Gala được.",
+            code="GALA_NOT_OPEN_YET",
+            details={"current_status": event.status},
+        )
+    return event
+
+
+def get_client_ip(request: Request) -> str | None:
+    """IP client sau reverse proxy — dùng cho audit log và rate limit đăng nhập.
+
+    Thứ tự tin cậy:
+    1. `X-Real-IP` — nginx của mình đặt từ `$remote_addr`, client không ghi đè được.
+    2. Phần tử **cuối** của `X-Forwarded-For` — phần do proxy gần nhất nối vào.
+       Lấy phần tử **đầu** (cách làm cũ) là tin chuỗi client tự gửi: chỉ cần thêm
+       `X-Forwarded-For: 1.2.3.4` là đổi được "IP" của mình, qua mặt rate limit và
+       làm bẩn cả audit log.
+    3. `request.client.host` khi gọi thẳng backend, không qua proxy.
+
+    Điều kiện để tin hai header trên: backend không publish cổng ra ngoài
+    (docker-compose.yml), mọi request đều đi qua nginx và nginx luôn ghi đè chúng.
+    """
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip and real_ip.strip():
+        return real_ip.strip()
+
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+        if hops:
+            return hops[-1]
+
+    return request.client.host if request.client else None
+
+
+def _status_message(current: str, allowed: set[str]) -> str:
+    if EventStatus.REGISTRATION_OPEN in allowed:
+        return (
+            "Thời gian đăng ký đã đóng."
+            if current != EventStatus.DRAFT
+            else "Chương trình chưa mở đăng ký."
+        )
+    return "Thao tác này không thực hiện được ở trạng thái hiện tại của chương trình."

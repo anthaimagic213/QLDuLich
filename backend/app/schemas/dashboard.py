@@ -1,0 +1,153 @@
+"""Schema dashboard BTC (docs/04-api-spec.md §10)."""
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+from app.schemas.email import EmailLogStats
+from app.schemas.registration import RegistrationStats
+
+
+class NextStatus(BaseModel):
+    status: str
+    label: str
+    is_forward: bool
+    # Bước lùi làm đổi thứ CBNV đang thấy → phải nêu lý do (event_service).
+    notify_scope: Literal["everyone", "participants"]
+
+
+class DashboardEvent(BaseModel):
+    id: int
+    code: str
+    name: str
+    destination: str | None = None
+    start_date: str
+    end_date: str
+    status: str
+    status_label: str
+    registration_closes_at: str | None = None
+    is_published: bool
+    next_statuses: list[NextStatus] = Field(default_factory=list)
+
+
+class TeamParticipation(BaseModel):
+    team_id: int | None = None
+    code: str | None = None
+    name: str
+    color: str | None = None
+    members: int
+    submitted: int
+    participating: int
+    not_participating: int
+    cancelled: int
+    not_submitted: int
+    response_rate: float
+    participation_rate: float
+    leader_user_id: int | None = None
+    leader_name: str | None = None
+    # Có người đi nhưng không có Trưởng nhóm đang tham gia (vd Trưởng nhóm vừa huỷ) — BTC cần chỉ định.
+    needs_leader: bool = False
+
+
+class FlightProgress(BaseModel):
+    direction: str
+    flights: int
+    usable_capacity: int
+    assigned: int
+    # Người tham gia CHƯA có chuyến ở chiều này — khác `usable - assigned` (ghế trống).
+    unassigned: int
+    remaining: int
+    shortfall: int
+
+
+class BusLegProgress(BaseModel):
+    trip_leg_id: int
+    code: str
+    name: str
+    direction: str
+    demand: int
+    buses: int
+    capacity: int
+    assigned: int
+    unassigned: int
+    shortfall: int
+
+
+class RoomProgress(BaseModel):
+    participants: int
+    assigned: int
+    unassigned: int
+    total_beds: int
+    uncovered: int
+
+
+class GalaProgress(BaseModel):
+    configured: bool
+    tables: int
+    seats: int
+    assigned: int
+    # Chỗ ngồi còn thiếu — chưa đủ thì không chuyển kỳ sang `event_started` được.
+    selection_status: str | None = None
+    teams_missing: int = 0
+    participants: int = 0
+    unseated: int = 0
+
+
+class ChecklistItem(BaseModel):
+    key: str
+    label: str
+    done: bool
+    # False = nên làm nhưng không chặn công bố (ví dụ email lỗi).
+    required: bool = True
+    detail: str | None = None
+    link: str | None = None
+
+
+class CancellationCounts(BaseModel):
+    # Yêu cầu huỷ sau công bố đang chờ BTC duyệt.
+    pending: int = 0
+    # CBNV tự huỷ trong 7 ngày gần nhất (đã được hệ thống xử lý, BTC cần nắm để xếp lại).
+    self_recent: int = 0
+    # CBNV đăng ký lại sau khi huỷ trong 7 ngày gần nhất — chưa có chỗ, BTC cần xếp lại.
+    reregistered_recent: int = 0
+
+
+class ActivityItem(BaseModel):
+    id: int
+    action: str
+    entity_type: str
+    entity_id: int | None = None
+    actor_name: str | None = None
+    reason: str | None = None
+    created_at: str
+
+
+class DashboardOut(BaseModel):
+    generated_at: str
+    event: DashboardEvent
+    registrations: RegistrationStats
+    teams: list[TeamParticipation]
+    flights: list[FlightProgress]
+    buses: list[BusLegProgress]
+    rooms: RoomProgress
+    gala: GalaProgress
+    emails: EmailLogStats
+    checklist: list[ChecklistItem]
+    ready_to_publish: bool
+    cancellations: CancellationCounts = Field(default_factory=CancellationCounts)
+    recent_activity: list[ActivityItem]
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    event_id: int | None = None
+    actor_id: int | None = None
+    actor_name: str | None = None
+    action: str
+    entity_type: str
+    entity_id: int | None = None
+    before: Any = None
+    after: Any = None
+    reason: str | None = None
+    ip_address: str | None = None
+    created_at: str
