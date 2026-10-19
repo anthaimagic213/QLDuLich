@@ -79,6 +79,39 @@ flowchart TD
 - Quản lý kế toán chi phí
 - Chatbot AI và các tính năng mở rộng
 
+## 1.5. So sánh Trước và Sau
+
+```mermaid
+graph LR
+    subgraph "TRƯỚC KHI CÓ HỆ THỐNG"
+        A1[Excel phân tán] --> B1[Phân bổ thủ công<br/>2-3 ngày]
+        B1 --> C1[Nhiều sai sót<br/>8%]
+        C1 --> D1[CBNV hỏi liên tục<br/>180 email/kỳ]
+        D1 --> E1[Hài lòng thấp<br/>68%]
+    end
+    
+    subgraph "SAU KHI CÓ HỆ THỐNG"
+        A2[Tập trung hóa] --> B2[Tự động<br/>vài giây]
+        B2 --> C2[Chính xác<br/>98%]
+        C2 --> D2[Tự tra cứu<br/>50 email/kỳ]
+        D2 --> E2[Hài lòng cao<br/>85%+]
+    end
+    
+    style A1 fill:#ff6b6b
+    style B1 fill:#ff6b6b
+    style C1 fill:#ff6b6b
+    style D1 fill:#ff6b6b
+    style E1 fill:#ff6b6b
+    
+    style A2 fill:#51cf66
+    style B2 fill:#51cf66
+    style C2 fill:#51cf66
+    style D2 fill:#51cf66
+    style E2 fill:#51cf66
+```
+
+*Hình 1.2: So sánh hiệu quả trước và sau*
+
 ---
 
 **Kết luận chương 1:**
