@@ -2,7 +2,8 @@
 """Gọi mô hình ngôn ngữ.
 
 - `GeminiLLM`: Google Gemini qua SDK `google-genai` (gói miễn phí ở aistudio.google.com).
-- `ExtractiveLLM`: chưa có `GEMINI_API_KEY` → trả lời bằng trích đoạn tài liệu, không gọi mạng. Để demo/CI
+- `OpenAICompatibleLLM`: Gọi API tương thích OpenAI (TrollLLM, OpenAI, v.v.).
+- `ExtractiveLLM`: chưa có API key của provider đang chọn → trả lời bằng trích đoạn tài liệu, không gọi mạng. Để demo/CI
   chạy được và frontend không gãy khi thiếu key.
 
 Lưu ý gói miễn phí: Google có thể dùng nội dung gửi lên để cải thiện sản phẩm. Vì vậy chỉ gửi câu hỏi +
@@ -82,6 +83,60 @@ def _to_llm_error(exc) -> LLMError:
     if exc.code in (400, 401, 403) and "key" in (exc.message or "").lower():
         return LLMError("LLM_NOT_CONFIGURED", "Khoá API của trợ lý không hợp lệ. Báo Ban tổ chức kiểm tra GEMINI_API_KEY.")
     if exc.code and exc.code >= 500:
+        return LLMError("LLM_UNAVAILABLE", "Máy chủ AI đang gặp sự cố. Thử lại sau ít phút.")
+    return LLMError("LLM_FAILED", "Trợ lý chưa trả lời được câu này. Thử hỏi lại theo cách khác nhé.")
+
+
+class OpenAICompatibleLLM:
+    """Gọi API tương thích OpenAI (OpenAI, TrollLLM, v.v.)."""
+    configured = True
+
+    def __init__(self, *, api_key: str, model: str, max_output_tokens: int, temperature: float, base_url: str) -> None:
+        from openai import AsyncOpenAI
+
+        self.name = model
+        self._max_output_tokens = max_output_tokens
+        self._temperature = temperature
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+    async def stream(self, *, system: str, turns: list[Turn], hits: list[SearchHit]) -> AsyncIterator[str]:
+        from openai import APIError
+
+        messages = [{"role": "system", "content": system}]
+        for turn in turns:
+            messages.append({"role": turn.role, "content": turn.text})
+
+        try:
+            response = await self._client.chat.completions.create(
+                model=self.name,
+                messages=messages,
+                temperature=self._temperature,
+                max_tokens=self._max_output_tokens,
+                stream=True,
+            )
+            async for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except APIError as exc:
+            logger.warning("OpenAI-compatible API lỗi %s", getattr(exc, "status_code", None))
+            raise _to_openai_llm_error(exc) from exc
+        except (TimeoutError, OSError) as exc:
+            raise LLMError("LLM_UNAVAILABLE", "Không kết nối được máy chủ AI. Thử lại sau ít phút.") from exc
+
+
+def _to_openai_llm_error(exc) -> LLMError:
+    """Chuyển lỗi từ OpenAI SDK sang LLMError."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        return LLMError("LLM_UNAVAILABLE", "Không kết nối được máy chủ AI. Thử lại sau ít phút.")
+
+    if status == 404:
+        return LLMError("LLM_NOT_CONFIGURED", "Model AI đang cấu hình không còn khả dụng. Báo Ban tổ chức đổi LLM_MODEL.")
+    if status == 429:
+        return LLMError("LLM_QUOTA_EXCEEDED", "Trợ lý đang hết lượt miễn phí hoặc quá tải. Thử lại sau ít phút.")
+    if status in (401, 403):
+        return LLMError("LLM_NOT_CONFIGURED", "Khoá API của trợ lý không hợp lệ. Báo Ban tổ chức kiểm tra LLM_API_KEY.")
+    if status and status >= 500:
         return LLMError("LLM_UNAVAILABLE", "Máy chủ AI đang gặp sự cố. Thử lại sau ít phút.")
     return LLMError("LLM_FAILED", "Trợ lý chưa trả lời được câu này. Thử hỏi lại theo cách khác nhé.")
 

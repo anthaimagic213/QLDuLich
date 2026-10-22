@@ -118,7 +118,7 @@ function AssistantSection({ published }) {
             <span className="font-medium text-slate-700 tabular-nums">{formatNumber(data.indexed_chunks)}</span> đoạn
             kiến thức · nạp {data.last_indexed_at ? formatRelative(data.last_indexed_at) : 'chưa lần nào'} ·{' '}
             <span className="whitespace-nowrap">
-              {data.llm_configured ? data.model : 'chế độ thử (chưa có GEMINI_API_KEY)'}
+              {data.llm_configured ? data.model : 'chế độ thử (chưa có LLM_API_KEY)'}
             </span>
           </p>
           {(stale || empty) && (

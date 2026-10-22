@@ -77,7 +77,14 @@ class Settings(BaseSettings):
 
     # --- RAG / LLM ---
     GEMINI_API_KEY: str = ""
-    LLM_MODEL: str = "gemini-3.6-flash"
+    # Loại LLM provider: "gemini" hoặc "openai"
+    LLM_PROVIDER: str = "openai"
+    # API key cho LLM (Gemini hoặc OpenAI-compatible như TrollLLM)
+    LLM_API_KEY: str = ""
+    # Base URL cho OpenAI-compatible API (ví dụ: https://chat.trollllm.xyz/v1)
+    LLM_BASE_URL: str = "https://chat.trollllm.xyz/v1"
+    # Tên model (ví dụ: gpt-6.1-sol, gemini-3.6-flash)
+    LLM_MODEL: str = "gpt-6.1-sol"
     LLM_MAX_TOKENS: int = 1024
     LLM_TEMPERATURE: float = 0.2
     # 0 = tắt "suy nghĩ" (nhanh, không đốt quota) — hợp với hỏi đáp tra cứu; -1 = để mô hình tự quyết.

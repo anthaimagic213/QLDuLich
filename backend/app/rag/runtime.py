@@ -10,7 +10,7 @@ from functools import lru_cache
 
 from app.core.config import settings
 from app.rag.embeddings import FastEmbedEmbedder
-from app.rag.llm import LLM, ExtractiveLLM, GeminiLLM
+from app.rag.llm import LLM, ExtractiveLLM, GeminiLLM, OpenAICompatibleLLM
 from app.rag.vector_store import VectorStore
 
 _store_lock = threading.Lock()
@@ -29,12 +29,26 @@ def get_vector_store() -> VectorStore:
 
 @lru_cache
 def get_llm() -> LLM:
-    if not settings.GEMINI_API_KEY.strip():
-        return ExtractiveLLM()
-    return GeminiLLM(
-        api_key=settings.GEMINI_API_KEY,
-        model=settings.LLM_MODEL,
-        max_output_tokens=settings.LLM_MAX_TOKENS,
-        temperature=settings.LLM_TEMPERATURE,
-        thinking_level=settings.LLM_THINKING_LEVEL,
-    )
+    provider = settings.LLM_PROVIDER.strip().lower()
+    if provider == "gemini":
+        api_key = settings.LLM_API_KEY.strip() or settings.GEMINI_API_KEY.strip()
+        if not api_key:
+            return ExtractiveLLM()
+        return GeminiLLM(
+            api_key=api_key,
+            model=settings.LLM_MODEL,
+            max_output_tokens=settings.LLM_MAX_TOKENS,
+            temperature=settings.LLM_TEMPERATURE,
+            thinking_level=settings.LLM_THINKING_LEVEL,
+        )
+    if provider == "openai":
+        if not settings.LLM_API_KEY.strip():
+            return ExtractiveLLM()
+        return OpenAICompatibleLLM(
+            api_key=settings.LLM_API_KEY.strip(),
+            model=settings.LLM_MODEL,
+            max_output_tokens=settings.LLM_MAX_TOKENS,
+            temperature=settings.LLM_TEMPERATURE,
+            base_url=settings.LLM_BASE_URL.strip(),
+        )
+    raise ValueError(f"LLM_PROVIDER không hợp lệ: {provider}. Chỉ hỗ trợ 'gemini' hoặc 'openai'.")

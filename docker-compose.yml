@@ -60,7 +60,15 @@ services:
       SMTP_FROM_EMAIL: btc@teambuilding.local
 
       # --- Chatbot Tibi ---
-      # Để trống = "chế độ thử" (trả lời mẫu, không gọi AI). Có key thì đặt GEMINI_API_KEY trong .env.
+      # Provider: "gemini" hoặc "openai" (TrollLLM, OpenAI, v.v.)
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      # API key cho LLM
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      # Base URL cho OpenAI-compatible API (ví dụ: https://chat.trollllm.xyz/v1)
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      # Tên model
+      LLM_MODEL: ${LLM_MODEL:-gpt-6.1-sol}
+      # Chỉ dùng khi LLM_PROVIDER=gemini và LLM_API_KEY trống
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
 
       # --- Dữ liệu mẫu lần đầu ---
